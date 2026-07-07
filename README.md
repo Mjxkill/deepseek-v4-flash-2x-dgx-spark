@@ -32,15 +32,21 @@ GET /v1/models → deepseek-ai/DeepSeek-V4-Flash  (max_model_len 500000)
 ## Quick start
 
 ```bash
-# 1. On BOTH Sparks: give the cabled port a static IP (survives reboot)
-sudo cp netplan/90-cx7-200g.yaml /etc/netplan/   # edit the address per node
-sudo chmod 600 /etc/netplan/90-cx7-200g.yaml && sudo netplan apply
-# head = 10.99.1.1/24, worker = 10.99.1.2/24  →  ping must be 0% loss
+git clone https://github.com/Mjxkill/deepseek-v4-flash-2x-dgx-spark
+cd deepseek-v4-flash-2x-dgx-spark
 
-# 2. On the worker node
-export HEAD_SSH=user@spark-head ENDPOINT=http://spark-head:8000
-./scripts/launch-deepseek.sh
+# 1. Installer / preflight (idempotent — installs uv+sparkrun if missing,
+#    checks docker, SSH mesh, the 200G link, and applies the NCCL patch;
+#    prints the exact sudo commands for the netplan IPs, the only manual step)
+HEAD_SSH=user@spark-head ./install.sh
+
+# 2. When all checks are green:
+HEAD_SSH=user@spark-head ENDPOINT=http://spark-head:8000 ./scripts/launch-deepseek.sh
 ```
+
+The netplan IPs (the one sudo step, on **both** Sparks): head = `10.99.1.1/24`,
+worker = `10.99.1.2/24` on the cabled `enp1s0f0np0` — see
+[`netplan/90-cx7-200g.yaml`](netplan/90-cx7-200g.yaml).
 
 The launcher is idempotent: it checks the link, re-applies the sparkrun patch
 (trap #3), cleans stale Ray state (trap #4), then runs
@@ -157,6 +163,7 @@ counters. Measured here: **~315 MB TX / 316 MB RX for 120 generated tokens**
 
 | Path | What |
 |---|---|
+| `install.sh` | Idempotent installer/preflight (uv+sparkrun, SSH mesh, 200G link, patch) |
 | `recipes/deepseek-v4-flash.yaml` | Fixed recipe (trap #1) |
 | `patches/sparkrun-nccl-gid-filter.patch` | The NCCL GID filter as a unified diff (trap #3) |
 | `patches/apply_sparkrun_patch.py` | Idempotent re-applicator (survives sparkrun upgrades) |

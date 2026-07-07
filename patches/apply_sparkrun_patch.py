@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ré-applique le patch NCCL GID de ft-studio sur sparkrun (idempotent).
+"""Re-apply the NCCL GID patch to sparkrun (idempotent).
 
 sparkrun est un tool uv : toute mise à jour / réinstallation ÉCRASE le patch dans
 site-packages. Ce script le ré-applique. Lancé automatiquement par launch-deepseek.sh.
@@ -60,19 +60,19 @@ def find_target() -> str | None:
 def main() -> int:
     path = find_target()
     if not path:
-        print("sparkrun introuvable (uv tool non installé ?)")
+        print("sparkrun not found (uv tool not installed?)")
         return 1
     src = open(path).read()
     if MARKER in src:
-        print(f"déjà patché : {path}")
+        print(f"already patched: {path}")
         return 0
     new, n = ORIGINAL_RE.subn(PATCH_BLOCK, src, count=1)
     if n != 1:
-        print(f"ÉCHEC : bloc d'origine introuvable dans {path} — "
-              "sparkrun a changé, patch à réviser à la main.")
+        print(f"FAILED: original block not found in {path} — "
+              "sparkrun changed, revise the patch manually.")
         return 2
     open(path, "w").write(new)
-    print(f"patch appliqué : {path}")
+    print(f"patch applied: {path}")
     return 0
 
 
