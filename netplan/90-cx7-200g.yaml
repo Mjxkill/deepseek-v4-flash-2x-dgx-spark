@@ -1,0 +1,18 @@
+# Persistent IPs for the direct 200G QSFP-DD link between the two DGX Sparks
+# (ConnectX-7 port f0 on both). SAME file on both machines, only the address
+# changes:
+#   head   : 10.99.1.1/24        worker : 10.99.1.2/24
+#
+# Install (sudo, on EACH Spark):
+#   sudo cp 90-cx7-200g.yaml /etc/netplan/
+#   <edit the address for this node>
+#   sudo chmod 600 /etc/netplan/90-cx7-200g.yaml
+#   sudo netplan apply
+network:
+  version: 2
+  ethernets:
+    enp1s0f0np0:
+      addresses:
+        - 10.99.1.1/24          # <- 10.99.1.2/24 on the worker
+      mtu: 9000
+      optional: true             # don't block boot if the cable is unplugged

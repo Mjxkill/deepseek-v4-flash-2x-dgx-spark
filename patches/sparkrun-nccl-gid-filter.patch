@@ -1,0 +1,35 @@
+--- a/sparkrun/orchestration/infiniband.py
++++ b/sparkrun/orchestration/infiniband.py
+@@ -168,7 +168,31 @@
+         return ",".join(parts)
+ 
+     if ib_info.get("DETECTED_HCA_LIST"):
+-        env["NCCL_IB_HCA"] = ib_info["DETECTED_HCA_LIST"]
++        # PATCH (ft-studio): drop RoCE HCAs that have no RoCEv2 IPv4 GID at
++        # NCCL_IB_GID_INDEX (3). Such a HCA (netdev without an IPv4, e.g. a 2nd
++        # ConnectX-7 port left unaddressed) exposes only a link-local IPv6 GID,
++        # so ibv_modify_qp fails ("local GID ::") and NCCL crashes cross-node.
++        def _hca_has_rocev2_ipv4_gid(hca: str, gid_index: int = 3) -> bool:
++            try:
++                with open(
++                    "/sys/class/infiniband/%s/ports/1/gids/%d" % (hca, gid_index)
++                ) as fh:
++                    gid = fh.read().strip().lower()
++            except OSError:
++                return True  # can't introspect → don't filter it out
++            # RoCEv2 over IPv4 => IPv4-mapped IPv6 GID: 0000:...:ffff:AABB:CCDD
++            # with a non-zero embedded IPv4. Anything else (fe80 link-local,
++            # all-zero) has no usable v2 GID at this index.
++            if "ffff:" not in gid:
++                return False
++            tail = gid.split("ffff:", 1)[1]
++            return tail not in ("0000:0000", "", "0000:0000\n")
++
++        _hcas = [h.strip() for h in ib_info["DETECTED_HCA_LIST"].split(",") if h.strip()]
++        _good = [h for h in _hcas if _hca_has_rocev2_ipv4_gid(h)]
++        # Only apply the filter if it leaves at least one HCA; otherwise fall
++        # back to the detected list so we never disable IB entirely by mistake.
++        env["NCCL_IB_HCA"] = ",".join(_good) if _good else ib_info["DETECTED_HCA_LIST"]
+     if ib_info.get("DETECTED_SOCKET_IFNAME"):  # prefer MGMT/default interface for non-IB HCA adapters since it works for mesh or non-mesh
+         _set_eth_interfaces("DETECTED_SOCKET_IFNAME")
+         env["NCCL_SOCKET_IFNAME"] = _nccl_socket_ifname_list(

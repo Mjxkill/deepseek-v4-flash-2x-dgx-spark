@@ -1,0 +1,48 @@
+recipe_version: '1'
+model: deepseek-ai/DeepSeek-V4-Flash
+runtime: vllm-ray
+builder: eugr
+min_nodes: 2
+container: vllm-node
+cluster_only: true
+metadata:
+  description: vLLM DeepSeek-V4-Flash 2-node (fix MTP speculative-config codé en dur)
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 2
+  gpu_memory_utilization: 0.8
+  max_model_len: 500000
+  block_size: 256
+  max_num_seqs: 4
+  max_num_batched_tokens: 8192
+  num_speculative_tokens: 2
+env:
+  DG_JIT_USE_NVRTC: '0'
+  VLLM_ALLOW_LONG_MAX_MODEL_LEN: '1'
+  VLLM_USE_BREAKABLE_CUDAGRAPH: '0'
+  NCCL_DEBUG: 'INFO'
+  NCCL_DEBUG_SUBSYS: 'INIT,NET,GRAPH'
+command: |
+  vllm serve deepseek-ai/DeepSeek-V4-Flash \
+      --host {host} \
+      --port {port} \
+      --trust-remote-code \
+      --tensor-parallel-size {tensor_parallel} \
+      --kv-cache-dtype fp8 \
+      --block-size {block_size} \
+      --max-model-len {max_model_len} \
+      --max-num-seqs {max_num_seqs} \
+      --max-num-batched-tokens {max_num_batched_tokens} \
+      --gpu-memory-utilization {gpu_memory_utilization} \
+      --enable-prefix-caching \
+      --speculative-config '{"method":"mtp","num_speculative_tokens":2}' \
+      --tokenizer-mode deepseek_v4 \
+      --distributed-executor-backend ray \
+      --tool-call-parser deepseek_v4 \
+      --enable-auto-tool-choice \
+      --reasoning-parser deepseek_v4 \
+      --reasoning-config '{"reasoning_parser":"deepseek_v4","reasoning_start_str":"","reasoning_end_str":""}' \
+      --default-chat-template-kwargs.thinking=true \
+      --default-chat-template-kwargs.reasoning_effort=high \
+      --load-format instanttensor
