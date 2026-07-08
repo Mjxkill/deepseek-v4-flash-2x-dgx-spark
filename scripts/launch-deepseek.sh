@@ -54,11 +54,24 @@ python3 "$HERE/../patches/apply_sparkrun_patch.py"
 #    Stale Ray pollutes the NCCL rendezvous: "ActorHandleNotFoundError … not
 #    valid across Ray sessions".
 say "cleaning stale Ray/containers…"
+# Two hard-earned lessons:
+#  - "sparkrun stop --all" only stops LOCAL jobs -> run it on BOTH nodes, or a
+#    head container from a previous session keeps its Ray GCS alive and the new
+#    cluster dies with "ActorHandle ... not valid across Ray sessions".
+#  - use docker WITHOUT sudo (docker group): an interactive sudo fails silently
+#    inside scripts and skips the cleanup.
 "$SPARKRUN" stop --all >/dev/null 2>&1 || true
+ssh -o BatchMode=yes "$HEAD_SSH" '"$HOME"/.local/bin/sparkrun stop --all >/dev/null 2>&1; \
+  pkill -9 -f "gcs_server|raylet|ray start" 2>/dev/null; \
+  docker ps -aq --filter name=sparkrun | xargs -r docker rm -f' || true
 pkill -9 -f "gcs_server|raylet|ray start" 2>/dev/null || true
-ssh -o BatchMode=yes "$HEAD_SSH" 'pkill -9 -f "gcs_server|raylet|ray start" 2>/dev/null; \
-  sudo docker ps -aq --filter name=sparkrun | xargs -r sudo docker rm -f' 2>/dev/null || true
-sudo docker ps -aq --filter name=sparkrun | xargs -r sudo docker rm -f 2>/dev/null || true
+docker ps -aq --filter name=sparkrun | xargs -r docker rm -f 2>/dev/null || true
+
+# GB10 unified-memory trap: drop the HF blob page cache on both nodes, or vLLM's
+# startup check sees "free < gpu_memory_utilization" right after a big download.
+python3 "$HERE/drop_hf_cache.py" || true
+scp -q "$HERE/drop_hf_cache.py" "$HEAD_SSH:/tmp/" 2>/dev/null && \
+  ssh -o BatchMode=yes "$HEAD_SSH" "python3 /tmp/drop_hf_cache.py" || true
 
 # 4. Launch (head = IP_HEAD, worker = IP_LOCAL; order of --hosts matters)
 say "launching sparkrun (recipe $RECIPE, DeepGEMM nightly image)…"

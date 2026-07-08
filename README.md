@@ -57,7 +57,7 @@ First launch downloads ~149 GB on each node. Loading takes **several minutes**
 `shm_broadcast: No available shared memory broadcast block in 60s` warnings during
 that phase are **benign**.
 
-## The four traps 🪤
+## The five traps 🪤
 
 ### 1. The upstream recipe generates invalid JSON (`--speculative-config`)
 
@@ -135,6 +135,21 @@ sudo docker ps -aq --filter name=sparkrun | xargs -r sudo docker rm -f
 
 (`scripts/launch-deepseek.sh` does this automatically; also avoid `--no-rm`.)
 
+### 5. `Free memory on device cuda:0 (…) is less than desired GPU memory utilization`
+
+Unified-memory trap. After downloading (or reading) ~200 GB of weights, the Linux
+page cache holds them; vLLM's fail-fast startup check measures **free** memory and
+refuses to start even though the cache is reclaimable. Bonus confusion: after the
+engine retries internally, the log ends with
+`ActorHandleNotFoundError … not valid across Ray sessions` — which looks like trap
+#4 but is only a **symptom**; always scroll up to the first `ValueError`.
+
+**Fix**: [`scripts/drop_hf_cache.py`](scripts/drop_hf_cache.py) returns the blob
+pages to the kernel (`posix_fadvise DONTNEED`, no sudo) on both nodes — the
+launcher runs it automatically. Also budget ~9 GiB/node for the OS + container
+stack when picking `gpu_memory_utilization`: on a 121.6 GiB GB10, 0.90 is the
+realistic ceiling (0.93 fails by ~1 GiB even with a clean cache).
+
 ## Measuring — don't trust the netdev counters
 
 During inference `/sys/class/net/*/statistics` stays at **zero**: RoCE is
@@ -170,6 +185,7 @@ counters. Measured here: **~315 MB TX / 316 MB RX for 120 generated tokens**
 | `scripts/launch-deepseek.sh` | One-shot idempotent launcher (checks link, patch, cleanup, run) |
 | `scripts/stop-deepseek.sh` | Clean stop on both nodes |
 | `scripts/bench-rdma.sh` | tok/s + real RDMA traffic measurement |
+| `scripts/drop_hf_cache.py` | Return HF blob page cache to the kernel (trap #5, no sudo) |
 | `netplan/90-cx7-200g.yaml` | Persistent IPs for the 200G link (both nodes) |
 | `docs/TROUBLESHOOTING.md` | Error signature → fix, in one table |
 
