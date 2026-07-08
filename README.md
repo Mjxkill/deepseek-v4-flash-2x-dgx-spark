@@ -57,7 +57,7 @@ First launch downloads ~149 GB on each node. Loading takes **several minutes**
 `shm_broadcast: No available shared memory broadcast block in 60s` warnings during
 that phase are **benign**.
 
-## The five traps 🪤
+## The six traps 🪤
 
 ### 1. The upstream recipe generates invalid JSON (`--speculative-config`)
 
@@ -150,6 +150,34 @@ launcher runs it automatically. Also budget ~9 GiB/node for the OS + container
 stack when picking `gpu_memory_utilization`: on a 121.6 GiB GB10, 0.90 is the
 realistic ceiling (0.93 fails by ~1 GiB even with a clean cache).
 
+### 6. `earlyoom`: DGX OS ships a daemon configured to kill your inference engine
+
+The sneakiest one. DGX OS runs [`earlyoom`](https://github.com/rfjakob/earlyoom) with:
+
+```
+EARLYOOM_ARGS="-m 2 -s 80 --prefer '(vllm|VLLM|sglang|llama-server|llama-cli|trtllm|tritonserver|ray|python3|python)' …"
+```
+
+i.e. when available memory drops below **2 %**, it SIGTERMs — **preferring inference
+engines by name**. At `gpu_memory_utilization ≥ 0.85` on unified memory you live
+exactly in that zone: our rank-0 Ray worker was killed *mid CUDA-graph-capture*,
+with no error in the vLLM logs (just `RayWorkerProc rank=[0] died unexpectedly`).
+Caught red-handed in `journalctl -u earlyoom`:
+
+```
+earlyoom[1523]: sending SIGTERM to process … "ray::RayWorkerP": badness 1658
+```
+
+**Fix**: disable it (the kernel OOM-killer remains as a last resort), along with the
+GNOME stack and desktop cruft that DGX OS runs by default —
+[`scripts/optimize-spark.sh`](scripts/optimize-spark.sh) does all of it (idempotent,
+`--dry-run` supported, documents what it keeps and why: `rdma-ndd` is vital for RoCE).
+
+Bonus finding for hybrid-attention models (e.g. Qwen3.5-MoE family): their Mamba
+cache imposes `max_num_batched_tokens ≥ 4176` — that oddly specific number you see
+in community recipes is a **constraint**, not tuning
+(`AssertionError: In Mamba cache align mode, block_size (4176) must be <= max_num_batched_tokens`).
+
 ## Measuring — don't trust the netdev counters
 
 During inference `/sys/class/net/*/statistics` stays at **zero**: RoCE is
@@ -186,6 +214,7 @@ counters. Measured here: **~315 MB TX / 316 MB RX for 120 generated tokens**
 | `scripts/stop-deepseek.sh` | Clean stop on both nodes |
 | `scripts/bench-rdma.sh` | tok/s + real RDMA traffic measurement |
 | `scripts/drop_hf_cache.py` | Return HF blob page cache to the kernel (trap #5, no sudo) |
+| `scripts/optimize-spark.sh` | Headless model-farm hardening: kill earlyoom (trap #6), GNOME, desktop cruft |
 | `netplan/90-cx7-200g.yaml` | Persistent IPs for the 200G link (both nodes) |
 | `docs/TROUBLESHOOTING.md` | Error signature → fix, in one table |
 
