@@ -1,28 +1,28 @@
 #!/usr/bin/env bash
-# Turn a DGX Spark into a PURE headless MODEL FARM.
-# Basé sur l'inventaire réel gx10-1/gx10-2 du 2026-07-08. Idempotent.
+# Turn a DGX Spark into a PURE headless MODEL FARM. Idempotent.
 #
-# Usage :  sudo ./optimize-spark.sh          # applique
-#          ./optimize-spark.sh --dry-run     # montre sans rien faire
+# Usage:  sudo ./optimize-spark.sh          # apply
+#         ./optimize-spark.sh --dry-run     # preview, no changes
 #
-# ── LA DÉCOUVERTE QUI JUSTIFIE CE SCRIPT ────────────────────────────────────
-# DGX OS livre `earlyoom` avec --prefer '(vllm|VLLM|sglang|...|ray|python)' :
-# il tue EN PRIORITÉ les moteurs d'inférence dès que la mémoire dispo < 2 %.
-# Flagrant délit (gx10-2, 2026-07-08 19:16:42) : SIGTERM à "ray::RayWorkerP"
-# en pleine capture CUDA graphs d'Ornith 397B. Tout serving à >85 % d'util
-# est condamné tant qu'il tourne. Le kernel garde son propre OOM-killer en
-# dernier recours -> on peut le couper sans risque de figer la machine.
+# ── WHY THIS SCRIPT EXISTS ──────────────────────────────────────────────────
+# DGX OS ships `earlyoom` configured with
+#   --prefer '(vllm|VLLM|sglang|llama-server|...|ray|python3|python)'
+# i.e. below 2% available memory it SIGTERMs — PREFERRING inference engines by
+# name. Caught red-handed killing a Ray TP worker mid CUDA-graph capture, with
+# zero error in the vLLM logs. Any serving above ~85% memory utilization is
+# doomed while it runs. The kernel's own OOM-killer remains as a last resort,
+# so disabling it is safe.
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
 
 DRY=""
 [ "${1:-}" = "--dry-run" ] && DRY="echo [dry-run]"
-[ -z "$DRY" ] && [ "$(id -u)" != "0" ] && { echo "sudo requis (ou --dry-run)"; exit 1; }
+[ -z "$DRY" ] && [ "$(id -u)" != "0" ] && { echo "sudo required (or --dry-run)"; exit 1; }
 
 avail(){ awk '/MemAvailable/{printf "%.1f GiB", $2/1048576}' /proc/meminfo; }
-echo "MemAvailable avant : $(avail)"
+echo "MemAvailable before: $(avail)"
 
-off(){ # stop + disable + mask (mask = rien ne peut le relancer par dépendance)
+off(){ # stop + disable + mask (mask = nothing can pull it back in via deps)
   for u in "$@"; do
     systemctl list-unit-files "$u" >/dev/null 2>&1 || continue
     $DRY systemctl disable --now "$u" 2>/dev/null
@@ -31,41 +31,41 @@ off(){ # stop + disable + mask (mask = rien ne peut le relancer par dépendance)
   done
 }
 
-echo "── 1. earlyoom (le tueur de modèles — voir en-tête)"
+echo "-- 1. earlyoom (the model killer -- see header)"
 off earlyoom.service
 
-echo "── 2. Pile graphique (headless : tout passe par SSH)"
+echo "-- 2. Graphical stack (headless: everything goes through SSH)"
 $DRY systemctl set-default multi-user.target
 off gdm.service gdm3.service gnome-remote-desktop.service accounts-daemon.service \
     switcheroo-control.service colord.service rtkit-daemon.service
 
-echo "── 3. Périphériques / bureau sans objet sur une ferme à modèles"
+echo "-- 3. Desktop peripherals with no purpose on a model farm"
 off bluetooth.service cups.service cups-browsed.service cups.socket cups.path \
     ModemManager.service avahi-daemon.service avahi-daemon.socket \
     wpa_supplicant.service upower.service udisks2.service \
     fwupd.service fwupd-refresh.timer whoopsie.service apport.service kerneloops.service
 
-echo "── 4. Ce qu'on GARDE (et pourquoi) :"
+echo "-- 4. What we KEEP (and why):"
 cat <<'KEEP'
-  ssh docker containerd     : accès + conteneurs des modèles
-  NetworkManager systemd-*  : réseau/boot/journal
-  tailscaled                : mesh d'admin
-  nvidia-persistenced       : GPU prêt sans latence de réveil
-  rdma-ndd                  : nommage RDMA -> indispensable au lien RoCE 200G
-  rasdaemon smartmontools   : santé matérielle (RAM ECC, NVMe)
-  multipathd cron rsyslog polkit dbus : plomberie de base
+  ssh docker containerd     : access + model containers
+  NetworkManager systemd-*  : network/boot/journal
+  nvidia-persistenced       : GPU ready without wake latency
+  rdma-ndd                  : RDMA device naming -> REQUIRED for the RoCE 200G link
+  rasdaemon smartmontools   : hardware health (ECC RAM, NVMe)
+  multipathd cron rsyslog polkit dbus : base plumbing
+  (tailscaled if you use it)
 KEEP
 
-echo "── 5. Optionnel (décommenter si assumé) :"
+echo "-- 5. Optional (uncomment if you accept the trade-off):"
 cat <<'OPT'
-  # NVIDIA dashboard web + télémétrie (inutiles si admin par SSH) :
+  # NVIDIA web dashboard + telemetry (useless if you admin over SSH):
   # systemctl disable --now dgx-dashboard.service dgx-dashboard-admin.service nvidia-dgx-telemetry.service lldpd.service
-  # snapd + snaps de BUREAU (firefox, thunderbird, snap-store sur un noeud de calcul !) :
+  # snapd + DESKTOP snaps (yes, DGX OS ships firefox/thunderbird/snap-store on a compute node):
   # snap remove firefox thunderbird snap-store firmware-updater snapd-desktop-integration
   # systemctl disable --now snapd.service snapd.socket snapd.seeded.service
 OPT
 
-echo "── 6. Services UTILISATEUR (audio/bureau — aucun sudo requis, relancé pour l'user courant)"
+echo "-- 6. USER units (audio/desktop -- no sudo needed, applied for the invoking user)"
 USER_UNITS="pipewire.service pipewire-pulse.service wireplumber.service filter-chain.service \
   gvfs-daemon.service xdg-document-portal.service xdg-permission-store.service \
   snap.snapd-desktop-integration.snapd-desktop-integration.service"
@@ -77,5 +77,5 @@ for u in $USER_UNITS; do
 done
 
 echo ""
-echo "MemAvailable après : $(avail)   (le gros du gain GUI apparaît au prochain boot)"
-echo "Terminé. Un reboot est recommandé pour partir propre (multi-user.target)."
+echo "MemAvailable after: $(avail)   (most of the GUI gain shows at next boot)"
+echo "Done. A reboot is recommended to start clean in multi-user.target."

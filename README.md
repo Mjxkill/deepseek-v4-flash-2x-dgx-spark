@@ -12,6 +12,10 @@ Status: **working**. OpenAI-compatible endpoint on the head node (`:8000`),
 GET /v1/models → deepseek-ai/DeepSeek-V4-Flash  (max_model_len 500000)
 ```
 
+> Companion repo (same cluster): **[ornith-397b-2x-dgx-spark](https://github.com/Mjxkill/ornith-397b-2x-dgx-spark)**
+> — Ornith-1.0-397B (W4A16, thinking+multimodal, ~20 tok/s) with its own traps:
+> the real GB10 memory math, the Mamba `4176` constraint, and the earlyoom deep-dive.
+
 ## Hardware
 
 | Piece | Detail |
