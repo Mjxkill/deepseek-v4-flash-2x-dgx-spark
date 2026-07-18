@@ -6,13 +6,19 @@ min_nodes: 2
 container: vllm-node
 cluster_only: true
 metadata:
-  description: vLLM DeepSeek-V4-Flash 2-node (fix MTP speculative-config codé en dur)
+  description: vLLM DeepSeek-V4-Flash 2-node, 1M context (hardcoded MTP speculative-config, trap #1)
 defaults:
   port: 8000
   host: 0.0.0.0
   tensor_parallel: 2
-  gpu_memory_utilization: 0.8
-  max_model_len: 500000
+  # 0.80 -> 0.88 once earlyoom + the desktop stack are gone (optimize-spark.sh,
+  # trap #6): ~10 GiB more usable per node.
+  gpu_memory_utilization: 0.88
+  # 1M = the model's native trained context. MLA makes KV nearly free: at boot vLLM
+  # reserves a ~19 GiB pool holding 2,856,813 tokens (2.72x concurrency at 1M) — no
+  # --kv-cache-memory-bytes trick needed. The launcher's "Max context 784k" banner
+  # is a bf16 estimate; trust vLLM's "GPU KV cache size: N tokens" line at boot.
+  max_model_len: 1048576
   block_size: 256
   max_num_seqs: 4
   max_num_batched_tokens: 8192

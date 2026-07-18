@@ -1,20 +1,52 @@
 # DeepSeek-V4-Flash on 2× NVIDIA DGX Spark (TP=2 over 200G RoCE)
 
 Everything needed to serve **deepseek-ai/DeepSeek-V4-Flash** (fp8, ~149 GB of weights,
-500k context, MTP speculative decoding, DeepSeek Sparse Attention) across **two DGX
-Spark (GB10)** connected by a single QSFP-DD cable — including the **four traps** that
+1M context, MTP speculative decoding, DeepSeek Sparse Attention) across **two DGX
+Spark (GB10)** connected by a single QSFP-DD cable — including the **traps** that
 each crash the launch, and the fixes for all of them.
 
 Status: **working**. OpenAI-compatible endpoint on the head node (`:8000`),
-~**16 tok/s** single-stream decode, RDMA traffic confirmed on the 200G link.
+~**16 tok/s** single-stream decode, **1M context (retrieval-verified at 900k)**, RDMA traffic confirmed on the 200G link.
 
 ```
-GET /v1/models → deepseek-ai/DeepSeek-V4-Flash  (max_model_len 500000)
+GET /v1/models → deepseek-ai/DeepSeek-V4-Flash  (max_model_len 1048576)
 ```
 
 > Companion repo (same cluster): **[ornith-397b-2x-dgx-spark](https://github.com/Mjxkill/ornith-397b-2x-dgx-spark)**
 > — Ornith-1.0-397B (W4A16, thinking+multimodal, ~20 tok/s) with its own traps:
 > the real GB10 memory math, the Mamba `4176` constraint, and the earlyoom deep-dive.
+
+## 1M context on 2 Sparks — and why the launcher's "fit" banner lies
+
+DeepSeek-V4-Flash is trained for **1M tokens**, and it fits on two Sparks *with room
+to spare* — because **MLA (Multi-head Latent Attention) makes the KV cache nearly
+free**. The only trap is trusting the wrong number.
+
+Our launcher prints a preflight "budget" banner that estimates KV in **bf16** and
+concludes something like `Max context tokens: 784,053`. **Ignore it.** The truth is
+what vLLM actually allocates at boot, in real fp8:
+
+```
+Available KV cache memory: ~19 GiB per node
+GPU KV cache size: 2,856,813 tokens
+Maximum concurrency for 1,048,576 tokens per request: 2.72x
+```
+
+A ~19 GiB MLA KV pool holds **2.86M tokens**, so a 1M `max_model_len` fits with
+**2.72×** headroom. No `--kv-cache-memory-bytes` trick is needed (unlike the GQA
+[companion model](https://github.com/Mjxkill/ornith-397b-2x-dgx-spark), whose KV
+actually grows with context) — just set `max_model_len: 1048576`. Here context is
+bounded by the model's trained length, not by memory.
+
+**Retrieval-verified.** Needle-in-a-haystack at **897,680 prompt tokens**, needle at
+50 % depth (the "lost in the middle" worst case): recovered exactly. The cost is
+**prefill**, not fit — ingesting a *cold* ~900k-token prompt takes ~38 min
+(~395 tok/s) before the first token, so reserve full-context requests for one-off
+large inputs and let prefix caching amortize re-queries.
+
+> Rule of thumb for this whole cluster: the sparkrun/launcher "fit" estimates count
+> KV in bf16 and badly under-report. Always read vLLM's own
+> `GPU KV cache size: N tokens` line at boot.
 
 ## Hardware
 
@@ -204,7 +236,10 @@ counters. Measured here: **~315 MB TX / 316 MB RX for 120 generated tokens**
 - MTP speculative decoding (`num_speculative_tokens: 2`) is active and included in
   that figure.
 - Memory: ~104/121 GB used per node → leave the Sparks alone while it serves.
-- `max_model_len 500000`, `kv-cache fp8`, `max_num_seqs 4` (see recipe defaults).
+- `max_model_len 1048576`, `kv-cache fp8`, `max_num_seqs 4` (see recipe defaults).
+- **Prefill dominates at long context**: a *cold* ~900k-token prompt takes ~38 min
+  (~395 tok/s) before the first token. Prefix caching makes re-queries of a shared
+  context cheap — you only pay for the new tokens.
 
 ## Repo layout
 
