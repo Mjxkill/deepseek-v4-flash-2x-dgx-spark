@@ -6,7 +6,7 @@ Spark (GB10)** connected by a single QSFP-DD cable — including the **traps** t
 each crash the launch, and the fixes for all of them.
 
 Status: **working**. OpenAI-compatible endpoint on the head node (`:8000`),
-~**16 tok/s** single-stream decode, **1M context (retrieval-verified at 900k)**, RDMA traffic confirmed on the 200G link.
+~**38 tok/s** single-stream decode, **1M context (retrieval-verified at 900k)**, RDMA traffic confirmed on the 200G link.
 
 ```
 GET /v1/models → deepseek-ai/DeepSeek-V4-Flash  (max_model_len 1048576)
@@ -93,7 +93,7 @@ First launch downloads ~149 GB on each node. Loading takes **several minutes**
 `shm_broadcast: No available shared memory broadcast block in 60s` warnings during
 that phase are **benign**.
 
-## The six traps 🪤
+## The seven traps 🪤
 
 ### 1. The upstream recipe generates invalid JSON (`--speculative-config`)
 
@@ -214,6 +214,26 @@ cache imposes `max_num_batched_tokens ≥ 4176` — that oddly specific number y
 in community recipes is a **constraint**, not tuning
 (`AssertionError: In Mamba cache align mode, block_size (4176) must be <= max_num_batched_tokens`).
 
+### 7. A node silently stuck at a low SM clock (halves your throughput)
+
+The nastiest one, because **nothing looks wrong**. After a long uptime one of our two
+Sparks sat at **721 MHz** while the other ran at **2489 MHz** — both reporting **95 %
+GPU utilization**. In TP=2 the cluster runs at the speed of the slowest node, so
+decode was stuck around ~16 tok/s. No throttle reason was flagged either
+(`clocks_throttle_reasons.active = 0x0`, no power cap, no thermal slowdown).
+
+```bash
+# compare BOTH nodes — utilization tells you nothing here
+nvidia-smi --query-gpu=clocks.sm,utilization.gpu,power.draw --format=csv,noheader
+```
+
+Healthy on GB10 under load: **~2489 MHz on both nodes** (max 3003). A node sitting
+near ~700 MHz *at high utilization* is the tell. **Fix: reboot that node.** After the
+reboot both nodes matched and single-stream decode went **16 → 38 tok/s (2.4×)**.
+
+Surface the SM clock in whatever dashboard you use: GPU utilization alone will never
+show you this, and you can lose half your cluster for weeks without noticing.
+
 ## Measuring — don't trust the netdev counters
 
 During inference `/sys/class/net/*/statistics` stays at **zero**: RoCE is
@@ -230,11 +250,16 @@ counters. Measured here: **~315 MB TX / 316 MB RX for 120 generated tokens**
 
 ## Performance notes
 
-- **~16 tok/s** single-stream decode. Cross-node TP=2 is **latency-bound**
-  (~1 ms per all-reduce on this link), not bandwidth-bound — don't expect the
-  single-node MoE numbers.
+- **~38 tok/s** single-stream decode — measured 37.5 / 38.3 / 38.1 tok/s over
+  3×300-token runs on an **idle** cluster. Cross-node TP=2 is still
+  **latency-bound** (~1 ms per all-reduce), so it won't match single-node MoE
+  numbers, but it is far better than the ~16 tok/s this repo previously reported.
+  **That old figure was simply wrong** — one node was clock-throttled (trap #7).
 - MTP speculative decoding (`num_speculative_tokens: 2`) is active and included in
   that figure.
+- ⚠ **Always benchmark on an idle cluster.** vLLM logs `Running: N reqs`; if N > 1
+  your "single-stream" number is measured under contention and reads low — we first
+  got 22-26 tok/s that way before re-measuring properly at ~38.
 - Memory: ~104/121 GB used per node → leave the Sparks alone while it serves.
 - `max_model_len 1048576`, `kv-cache fp8`, `max_num_seqs 4` (see recipe defaults).
 - **Prefill dominates at long context**: a *cold* ~900k-token prompt takes ~38 min

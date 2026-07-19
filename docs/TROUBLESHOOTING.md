@@ -16,3 +16,4 @@
 | Second launch re-downloads nothing but still slow to start | Normal: JIT + graph capture re-run | Wait; keep the container image cached |
 | `sparkrun` can't find the other node | No auto-discovery exists | Always pass `--hosts <head_ip>,<worker_ip>` (head first) |
 | Patch "block d'origine introuvable" from `apply_sparkrun_patch.py` | sparkrun upgrade changed `infiniband.py` | Re-derive the patch from `patches/sparkrun-nccl-gid-filter.patch` against the new source |
+| Throughput ~halved for no visible reason; both nodes show high GPU utilization | One node is stuck at a low SM clock (e.g. 721 MHz vs 2489) — TP=2 runs at the slowest node's speed; no throttle reason is flagged | Compare `nvidia-smi --query-gpu=clocks.sm,utilization.gpu --format=csv,noheader` on **both** nodes; reboot the slow one (trap #7) |
